@@ -6,8 +6,10 @@ from foodrec.models import (
     BiasedMF,
     ContentRanker,
     ItemKNNRanker,
+    LightGCNRanker,
     NMFImplicitRanker,
     PopularityRanker,
+    SASRecRanker,
     SVDNMFBlend,
     TwoTowerRetriever,
     select_hybrid_weights,
@@ -37,6 +39,39 @@ def test_two_tower_returns_candidate_aligned_scores(train_frame):
     scores = model.score_items("u1", ["c", "d", "missing"])
     assert scores.shape == (3,)
     assert np.isfinite(scores).all()
+
+
+def test_lightgcn_returns_candidate_aligned_scores(train_frame):
+    model = LightGCNRanker(embedding_dim=8, layers=1, epochs=1, batch_size=4, seed=7, device="cpu").fit(train_frame)
+    scores = model.score_items("u1", ["c", "d", "missing"])
+    assert scores.shape == (3,)
+    assert np.isfinite(scores).all()
+
+
+def test_sasrec_returns_candidate_aligned_scores(train_frame):
+    model = SASRecRanker(
+        embedding_dim=8, max_history=4, layers=1, heads=2, epochs=1, batch_size=4, seed=7, device="cpu"
+    ).fit(train_frame)
+    scores = model.score_items("u1", ["c", "d", "missing"])
+    assert scores.shape == (3,)
+    assert np.isfinite(scores).all()
+
+
+def test_sasrec_history_excludes_same_timestamp_events():
+    frame = pd.DataFrame(
+        [
+            ("u1", "a", 5, 1, "a", "a"),
+            ("u1", "b", 5, 1, "b", "b"),
+            ("u1", "c", 5, 2, "c", "c"),
+        ],
+        columns=["user_id", "item_id", "rating", "timestamp", "Summary", "Text"],
+    )
+    model = SASRecRanker(max_history=3, embedding_dim=6, heads=2, layers=1, epochs=1, device="cpu")
+    model.item_to_index = {"a": 0, "b": 1, "c": 2}
+    histories, targets, _, _ = model._examples(frame)
+    # Only c can be a target; a/b share the first timestamp and cannot predict each other.
+    assert targets.tolist() == [2]
+    assert histories.tolist() == [[3, 0, 1]]
 
 
 def test_two_tower_history_excludes_same_timestamp_events():

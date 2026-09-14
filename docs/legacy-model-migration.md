@@ -13,6 +13,8 @@ that use the shared data split and evaluator.
 | TF-IDF content model | `ContentRanker` | Product documents and vectorizer fit on the training partition only. |
 | Two-tower model | `TwoTowerRetriever` | Training targets see only strictly earlier positive history; same-timestamp events cannot leak into history. Text derives only from training reviews and duplicate positive item IDs are not false negatives. |
 | Generic hybrid | `WeightedHybridRanker` | Named dependencies and validation-only weights replace notebook globals and test-set tuning. |
+| New graph comparison | `LightGCNRanker` | Positive train interactions form a normalized bipartite graph; BPR samples never access validation/test. |
+| New sequential comparison | `SASRecRanker` | Next-item examples only use strictly earlier timestamp groups; this tests sequence value without random-order leakage. |
 
 The historical notebook outputs are not comparable benchmark results: they used
 different sampling, tie, split, and/or metric conventions. The retained models are

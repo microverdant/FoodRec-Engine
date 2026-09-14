@@ -25,10 +25,12 @@ metrics with one shared data contract and evaluation layer.
 |---|---|---|
 | Popularity | cold-start baseline | training-only positive counts |
 | Sparse ItemKNN | collaborative retrieval | retained item-based model; top-K sparse similarity, no dense item-item matrix or positive-first tie |
+| LightGCN | graph collaborative retrieval | BPR on the positive train graph only; validation/test events never become graph edges |
 | BiasedMF | explicit SVD-style baseline | validation-only early stopping; shared candidate and seen-item policy |
 | Implicit NMF | factorisation retrieval baseline | clearly labelled implicit, rather than a misleading rating precision metric |
 | TF-IDF content | content retrieval | product documents built only from training reviews |
 | Causal-history two tower | neural retrieval | train-only text and strictly earlier positive histories; multi-positive loss prevents duplicate-item false negatives |
+| SASRec | sequential retrieval experiment | compact self-attention over strictly earlier timestamp groups; suitable for testing whether order adds signal |
 | SVD/NMF blend | retained merged fusion | rank-normalised blend with its SVD coefficient selected on validation, never test |
 | Weighted hybrid | score fusion | defined dependencies and validation-selected, rank-normalised weights |
 
@@ -62,6 +64,12 @@ train-only `ContentRanker`, explicit `BiasedMF`, implicit `NMFImplicitRanker`, a
 the validation-tuned `SVDNMFBlend`/`WeightedHybridRanker`. See
 [the migration notes](docs/legacy-model-migration.md) for exactly what changed and
 why the notebook evaluation cells are not used as benchmark results.
+
+LightGCN and SASRec are additional research comparisons. The benchmark includes
+both by default; use `--skip-neural` for a CPU-only classical/graph smoke run.
+The repository does not present DLRM/DCNv2 as CTR models because this dataset has
+no impression or non-click logs; adding a genuine industrial reranker requires
+those labels and request/context features.
 
 ## Development
 

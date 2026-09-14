@@ -14,8 +14,10 @@ from .models import (
     BiasedMF,
     ContentRanker,
     ItemKNNRanker,
+    LightGCNRanker,
     NMFImplicitRanker,
     PopularityRanker,
+    SASRecRanker,
     TwoTowerRetriever,
     SVDNMFBlend,
     select_hybrid_weights,
@@ -23,27 +25,29 @@ from .models import (
 )
 
 
-def _fit_models(train, validation, include_two_tower: bool):
+def _fit_models(train, validation, include_neural: bool):
     models = {
         "popularity": PopularityRanker().fit(train),
         "item_knn": ItemKNNRanker().fit(train),
         "biased_mf": BiasedMF().fit(train, validation),
         "implicit_nmf": NMFImplicitRanker().fit(train),
         "content_tfidf": ContentRanker().fit(train),
+        "lightgcn": LightGCNRanker().fit(train),
     }
-    if include_two_tower:
+    if include_neural:
         models["two_tower"] = TwoTowerRetriever().fit(train)
+        models["sasrec"] = SASRecRanker().fit(train)
     return models
 
 
-def run(csv_path: str, output_path: str, protocol: str, include_two_tower: bool) -> dict:
+def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) -> dict:
     builder = ReviewDatasetBuilder(DataConfig())
     data = builder.prepare(builder.load_csv(csv_path))
     split = per_user_temporal_split(data) if protocol == "per-user" else global_temporal_split(data)
 
     # Validation is used for model selection and hybrid weights. Test is untouched
     # until models and weights have been fixed.
-    validation_models = _fit_models(split.train, split.validation, include_two_tower)
+    validation_models = _fit_models(split.train, split.validation, include_neural)
     validation_metrics = {
         name: evaluate_ranking(model, split.train, split.validation)
         for name, model in validation_models.items()
@@ -60,7 +64,7 @@ def run(csv_path: str, output_path: str, protocol: str, include_two_tower: bool)
     validation_metrics["svd_nmf_blend"] = evaluate_ranking(svd_nmf_blend, split.train, split.validation)
 
     combined_train = pd.concat([split.train, split.validation], ignore_index=True)
-    final_models = _fit_models(combined_train, None, include_two_tower)
+    final_models = _fit_models(combined_train, None, include_neural)
     from .models import WeightedHybridRanker
 
     final_models["hybrid"] = WeightedHybridRanker(final_models, weights)
@@ -94,9 +98,10 @@ def main() -> None:
     parser.add_argument("--csv", required=True, help="Path to Kaggle Reviews.csv")
     parser.add_argument("--output", default="artifacts/benchmark.json")
     parser.add_argument("--protocol", choices=("per-user", "global"), default="per-user")
-    parser.add_argument("--skip-two-tower", action="store_true")
+    parser.add_argument("--skip-neural", action="store_true", help="Skip TwoTower and SASRec CPU/GPU training")
+    parser.add_argument("--skip-two-tower", action="store_true", help="Deprecated alias for --skip-neural")
     args = parser.parse_args()
-    report = run(args.csv, args.output, args.protocol, include_two_tower=not args.skip_two_tower)
+    report = run(args.csv, args.output, args.protocol, include_neural=not (args.skip_neural or args.skip_two_tower))
     print(json.dumps(report, indent=2))
 
 
