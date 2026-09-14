@@ -36,6 +36,54 @@ class WeightedHybridRanker:
         return fused
 
 
+class SVDNMFBlend(WeightedHybridRanker):
+    """Named rank-level fusion of the legacy SVD-style MF and implicit NMF models.
+
+    The original merged notebook mixed incomparable raw prediction scales and chose
+    its coefficient on test data.  This replacement preserves the experiment as a
+    rank-normalised retrieval blend whose coefficient is selected on validation.
+    """
+
+    def __init__(self, svd_model: object, nmf_model: object, svd_weight: float = 0.5) -> None:
+        if not 0.0 <= svd_weight <= 1.0:
+            raise ValueError("svd_weight must be between 0 and 1")
+        self.svd_weight = float(svd_weight)
+        super().__init__(
+            {"biased_mf": svd_model, "implicit_nmf": nmf_model},
+            {"biased_mf": self.svd_weight, "implicit_nmf": 1.0 - self.svd_weight},
+        )
+
+
+def select_svd_nmf_blend(
+    svd_model: object,
+    nmf_model: object,
+    train: pd.DataFrame,
+    validation: pd.DataFrame,
+    *,
+    k: int = 10,
+    positive_threshold: float = 4.0,
+    seed: int = 42,
+    max_users: int = 200,
+) -> tuple[SVDNMFBlend, float, dict[str, float]]:
+    """Select a SVD/NMF retrieval blend on validation only, never test."""
+    best: tuple[SVDNMFBlend, float, dict[str, float]] | None = None
+    for svd_weight in np.linspace(0.0, 1.0, 11):
+        blend = SVDNMFBlend(svd_model, nmf_model, float(svd_weight))
+        metrics = evaluate_ranking(
+            blend,
+            train,
+            validation,
+            k_values=(k,),
+            positive_threshold=positive_threshold,
+            seed=seed,
+            max_users=max_users,
+        )
+        if best is None or metrics[f"ndcg@{k}"] > best[2][f"ndcg@{k}"]:
+            best = (blend, float(svd_weight), metrics)
+    assert best is not None
+    return best
+
+
 def select_hybrid_weights(
     models: Mapping[str, object],
     train: pd.DataFrame,

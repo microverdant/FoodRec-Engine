@@ -24,11 +24,12 @@ metrics with one shared data contract and evaluation layer.
 | Model | Role | Fixed failure from the original notebooks |
 |---|---|---|
 | Popularity | cold-start baseline | training-only positive counts |
-| Sparse ItemKNN | collaborative retrieval | top-K sparse similarity; no dense item-item matrix or positive-first tie |
+| Sparse ItemKNN | collaborative retrieval | retained item-based model; top-K sparse similarity, no dense item-item matrix or positive-first tie |
 | BiasedMF | explicit SVD-style baseline | validation-only early stopping; shared candidate and seen-item policy |
 | Implicit NMF | factorisation retrieval baseline | clearly labelled implicit, rather than a misleading rating precision metric |
 | TF-IDF content | content retrieval | product documents built only from training reviews |
-| Two tower | neural retrieval | multi-positive in-batch loss prevents duplicate-item false negatives; train-only text |
+| Causal-history two tower | neural retrieval | train-only text and strictly earlier positive histories; multi-positive loss prevents duplicate-item false negatives |
+| SVD/NMF blend | retained merged fusion | rank-normalised blend with its SVD coefficient selected on validation, never test |
 | Weighted hybrid | score fusion | defined dependencies and validation-selected, rank-normalised weights |
 
 ## Setup
@@ -52,6 +53,15 @@ warm/cold cohorts separately.
 Use the benchmark output only to compare models under the same protocol. Do not
 compare it with legacy notebook numbers based on different catalogs or sampled
 negative sets.
+
+## Legacy notebook migration
+
+The original ItemCF is retained as `ItemKNNRanker`, and the useful merged-notebook
+ideas are retained as named source models: causal-history `TwoTowerRetriever`,
+train-only `ContentRanker`, explicit `BiasedMF`, implicit `NMFImplicitRanker`, and
+the validation-tuned `SVDNMFBlend`/`WeightedHybridRanker`. See
+[the migration notes](docs/legacy-model-migration.md) for exactly what changed and
+why the notebook evaluation cells are not used as benchmark results.
 
 ## Development
 

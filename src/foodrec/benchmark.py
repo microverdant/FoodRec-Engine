@@ -17,7 +17,9 @@ from .models import (
     NMFImplicitRanker,
     PopularityRanker,
     TwoTowerRetriever,
+    SVDNMFBlend,
     select_hybrid_weights,
+    select_svd_nmf_blend,
 )
 
 
@@ -49,15 +51,22 @@ def run(csv_path: str, output_path: str, protocol: str, include_two_tower: bool)
     hybrid, weights, hybrid_selection_metrics = select_hybrid_weights(
         validation_models, split.train, split.validation
     )
+    svd_nmf_blend, svd_weight, svd_nmf_selection_metrics = select_svd_nmf_blend(
+        validation_models["biased_mf"], validation_models["implicit_nmf"], split.train, split.validation
+    )
     # The bounded validation subset above is only for weight selection. Publish the
     # hybrid's validation result on the same full validation cohort as every model.
     validation_metrics["hybrid"] = evaluate_ranking(hybrid, split.train, split.validation)
+    validation_metrics["svd_nmf_blend"] = evaluate_ranking(svd_nmf_blend, split.train, split.validation)
 
     combined_train = pd.concat([split.train, split.validation], ignore_index=True)
     final_models = _fit_models(combined_train, None, include_two_tower)
     from .models import WeightedHybridRanker
 
     final_models["hybrid"] = WeightedHybridRanker(final_models, weights)
+    final_models["svd_nmf_blend"] = SVDNMFBlend(
+        final_models["biased_mf"], final_models["implicit_nmf"], svd_weight
+    )
     test_metrics = {
         name: evaluate_ranking(model, combined_train, split.test)
         for name, model in final_models.items()
@@ -69,6 +78,8 @@ def run(csv_path: str, output_path: str, protocol: str, include_two_tower: bool)
         "split_rows": {"train": len(split.train), "validation": len(split.validation), "test": len(split.test)},
         "hybrid_weights_selected_on_validation": weights,
         "hybrid_weight_selection_validation_sample": hybrid_selection_metrics,
+        "svd_nmf_blend_weight_selected_on_validation": svd_weight,
+        "svd_nmf_blend_selection_validation_sample": svd_nmf_selection_metrics,
         "validation_ranking": validation_metrics,
         "test_ranking": test_metrics,
         "test_rating_biased_mf": rating_metrics,
