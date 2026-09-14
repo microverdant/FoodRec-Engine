@@ -1,7 +1,63 @@
 # FoodRec Engine
 
-Reproducible recommendation experiments for the Amazon Fine Food Reviews dataset.
+Leakage-aware, reproducible recommendation experiments for the Amazon Fine Food
+Reviews dataset. The repository replaces notebook-global variables and incomparable
+metrics with one shared data contract and evaluation layer.
 
-The implementation is developed through pull requests. Raw datasets and trained
-artifacts are deliberately excluded from version control.
+## What this fixes
 
+- Cross-ASIN copies of the same user/rating/review are removed before splitting,
+  then each `(user, item)` pair is reduced to its final rating. This prevents a
+  copied target review from appearing in training under another product ID.
+- User and item filtering is an iterative k-core, not one pass of stale counts.
+- Rating prediction and Top-N recommendation are separate tasks. Rating reports
+  RMSE, MAE, per-star MAE and macro-MAE over all 1--5 ratings. Top-N treats only
+  ratings `>= 4` as relevant and reports Precision, Recall, Hit Rate, NDCG, MRR,
+  Coverage, cold-target counts, and popularity.
+- Top-N evaluates the complete training catalog with train-seen items masked. Ties
+  are broken by a deterministic hash independent of target insertion order.
+- All features, including TF-IDF documents, are fit on training data only. Hybrid
+  weights are selected on validation only; the test split is evaluated once.
+
+## Models
+
+| Model | Role | Fixed failure from the original notebooks |
+|---|---|---|
+| Popularity | cold-start baseline | training-only positive counts |
+| Sparse ItemKNN | collaborative retrieval | top-K sparse similarity; no dense item-item matrix or positive-first tie |
+| BiasedMF | explicit SVD-style baseline | validation-only early stopping; shared candidate and seen-item policy |
+| Implicit NMF | factorisation retrieval baseline | clearly labelled implicit, rather than a misleading rating precision metric |
+| TF-IDF content | content retrieval | product documents built only from training reviews |
+| Two tower | neural retrieval | multi-positive in-batch loss prevents duplicate-item false negatives; train-only text |
+| Weighted hybrid | score fusion | defined dependencies and validation-selected, rank-normalised weights |
+
+## Setup
+
+Download `Reviews.csv` from [Kaggle](https://www.kaggle.com/datasets/snap/amazon-fine-food-reviews)
+without committing it, then install and run:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+python -m foodrec.benchmark --csv D:\path\to\Reviews.csv --output artifacts\benchmark.json
+```
+
+The default primary protocol is per-user temporal splitting: the last distinct
+timestamp is test and the penultimate timestamp is validation. Users without three
+distinct timestamps are excluded rather than being split with an arbitrary order.
+Run `--protocol global` as a stricter production-style robustness check and report
+warm/cold cohorts separately.
+
+Use the benchmark output only to compare models under the same protocol. Do not
+compare it with legacy notebook numbers based on different catalogs or sampled
+negative sets.
+
+## Development
+
+```powershell
+pytest -q
+```
+
+Raw data, model checkpoints and generated artifacts are deliberately ignored. The
+implementation is developed through pull requests; see the included PR template.
