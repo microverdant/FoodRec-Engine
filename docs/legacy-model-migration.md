@@ -15,6 +15,7 @@ that use the shared data split and evaluator.
 | Generic hybrid | `WeightedHybridRanker` | Named dependencies and validation-only weights replace notebook globals and test-set tuning. |
 | New graph comparison | `LightGCNRanker` | Positive train interactions form a normalized bipartite graph; BPR samples never access validation/test. |
 | New sequential comparison | `SASRecRanker` | Next-item examples only use strictly earlier timestamp groups; this tests sequence value without random-order leakage. |
+| New linear comparison | `EASERanker` | Regularised item-item reconstruction with its regularisation selected on validation, never test. |
 
 The historical notebook outputs are not comparable benchmark results: they used
 different sampling, tie, split, and/or metric conventions. The retained models are

@@ -5,6 +5,7 @@ import pytest
 from foodrec.models import (
     BiasedMF,
     ContentRanker,
+    EASERanker,
     ItemKNNRanker,
     LightGCNRanker,
     NMFImplicitRanker,
@@ -13,6 +14,8 @@ from foodrec.models import (
     SVDNMFBlend,
     TwoTowerRetriever,
     select_hybrid_weights,
+    select_ease_regularization,
+    select_item_knn_parameters,
     select_svd_nmf_blend,
 )
 
@@ -25,6 +28,7 @@ from foodrec.models import (
         BiasedMF(n_factors=4, n_epochs=2),
         NMFImplicitRanker(n_components=2),
         ContentRanker(max_features=30),
+        EASERanker(regularization=10),
     ],
 )
 def test_classical_models_return_candidate_aligned_scores(model, train_frame):
@@ -100,6 +104,19 @@ def test_hybrid_weight_selection_uses_complete_weight_mappings(train_frame):
     _, weights, _ = select_hybrid_weights(models, train_frame, validation, max_users=2)
     assert set(weights) == set(models)
     assert sum(weights.values()) == 1.0
+
+
+def test_ease_and_itemknn_tuning_use_validation_only(train_frame):
+    validation = train_frame[train_frame.user_id.isin(["u1", "u2"])].copy()
+    _, regularization, _ = select_ease_regularization(
+        train_frame, validation, candidates=(10.0, 100.0), max_users=2
+    )
+    _, parameters, _ = select_item_knn_parameters(
+        train_frame, validation, candidates=((2, 0.0), (2, 10.0)), max_users=2
+    )
+    assert regularization in (10.0, 100.0)
+    assert parameters["n_neighbors"] == 2.0
+    assert parameters["shrinkage"] in (0.0, 10.0)
 
 
 def test_svd_nmf_blend_selects_validation_weight(train_frame):

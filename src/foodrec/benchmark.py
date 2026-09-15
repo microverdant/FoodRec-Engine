@@ -13,6 +13,7 @@ from .evaluation import evaluate_ranking, evaluate_ratings
 from .models import (
     BiasedMF,
     ContentRanker,
+    EASERanker,
     ItemKNNRanker,
     LightGCNRanker,
     NMFImplicitRanker,
@@ -21,17 +22,22 @@ from .models import (
     TwoTowerRetriever,
     SVDNMFBlend,
     select_hybrid_weights,
+    select_ease_regularization,
+    select_item_knn_parameters,
     select_svd_nmf_blend,
 )
 
 
-def _fit_models(train, validation, include_neural: bool):
+def _fit_models(train, validation, include_neural: bool, *, item_knn_parameters: dict[str, float], ease_regularization: float):
     models = {
         "popularity": PopularityRanker().fit(train),
-        "item_knn": ItemKNNRanker().fit(train),
+        "item_knn": ItemKNNRanker(
+            n_neighbors=int(item_knn_parameters["n_neighbors"]), shrinkage=item_knn_parameters["shrinkage"]
+        ).fit(train),
         "biased_mf": BiasedMF().fit(train, validation),
         "implicit_nmf": NMFImplicitRanker().fit(train),
         "content_tfidf": ContentRanker().fit(train),
+        "ease": EASERanker(regularization=ease_regularization).fit(train),
         "lightgcn": LightGCNRanker().fit(train),
     }
     if include_neural:
@@ -47,7 +53,15 @@ def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) ->
 
     # Validation is used for model selection and hybrid weights. Test is untouched
     # until models and weights have been fixed.
-    validation_models = _fit_models(split.train, split.validation, include_neural)
+    _, item_knn_parameters, item_knn_selection_metrics = select_item_knn_parameters(split.train, split.validation)
+    _, ease_regularization, ease_selection_metrics = select_ease_regularization(split.train, split.validation)
+    validation_models = _fit_models(
+        split.train,
+        split.validation,
+        include_neural,
+        item_knn_parameters=item_knn_parameters,
+        ease_regularization=ease_regularization,
+    )
     validation_metrics = {
         name: evaluate_ranking(model, split.train, split.validation)
         for name, model in validation_models.items()
@@ -64,7 +78,13 @@ def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) ->
     validation_metrics["svd_nmf_blend"] = evaluate_ranking(svd_nmf_blend, split.train, split.validation)
 
     combined_train = pd.concat([split.train, split.validation], ignore_index=True)
-    final_models = _fit_models(combined_train, None, include_neural)
+    final_models = _fit_models(
+        combined_train,
+        None,
+        include_neural,
+        item_knn_parameters=item_knn_parameters,
+        ease_regularization=ease_regularization,
+    )
     from .models import WeightedHybridRanker
 
     final_models["hybrid"] = WeightedHybridRanker(final_models, weights)
@@ -82,6 +102,10 @@ def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) ->
         "split_rows": {"train": len(split.train), "validation": len(split.validation), "test": len(split.test)},
         "hybrid_weights_selected_on_validation": weights,
         "hybrid_weight_selection_validation_sample": hybrid_selection_metrics,
+        "item_knn_parameters_selected_on_validation": item_knn_parameters,
+        "item_knn_selection_validation_sample": item_knn_selection_metrics,
+        "ease_regularization_selected_on_validation": ease_regularization,
+        "ease_selection_validation_sample": ease_selection_metrics,
         "svd_nmf_blend_weight_selected_on_validation": svd_weight,
         "svd_nmf_blend_selection_validation_sample": svd_nmf_selection_metrics,
         "validation_ranking": validation_metrics,

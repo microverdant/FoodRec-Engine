@@ -25,6 +25,7 @@ metrics with one shared data contract and evaluation layer.
 |---|---|---|
 | Popularity | cold-start baseline | training-only positive counts |
 | Sparse ItemKNN | collaborative retrieval | retained item-based model; top-K sparse similarity, no dense item-item matrix or positive-first tie |
+| EASE | linear collaborative retrieval | regularised item-item autoencoder; regularisation selected on validation only |
 | LightGCN | graph collaborative retrieval | BPR on the positive train graph only; validation/test events never become graph edges |
 | BiasedMF | explicit SVD-style baseline | validation-only early stopping; shared candidate and seen-item policy |
 | Implicit NMF | factorisation retrieval baseline | clearly labelled implicit, rather than a misleading rating precision metric |
@@ -70,6 +71,10 @@ both by default; use `--skip-neural` for a CPU-only classical/graph smoke run.
 The repository does not present DLRM/DCNv2 as CTR models because this dataset has
 no impression or non-click logs; adding a genuine industrial reranker requires
 those labels and request/context features.
+
+The benchmark selects ItemKNN neighbourhood/shrinkage and EASE regularisation from
+bounded candidate sets on validation only, records those selections in its JSON,
+then refits on train+validation before its one test pass.
 
 ## Development
 

@@ -13,6 +13,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 
+from foodrec.evaluation import evaluate_ranking
+
 
 def _positive_events(train: pd.DataFrame, threshold: float) -> pd.DataFrame:
     return train[train["rating"] >= threshold]
@@ -152,11 +154,89 @@ class BiasedMF:
         return np.clip(scores, 1.0, 5.0)
 
 
+class EASERanker:
+    """Embarrassingly Shallow Autoencoder (EASE) for implicit Top-N retrieval.
+
+    It learns a regularised item-item linear reconstruction on positive training
+    events only. The implementation keeps the learned coefficient matrix dense
+    because this dataset's item catalogue is small; it must not be used unchanged
+    for production-scale catalogues.
+    """
+
+    def __init__(self, regularization: float = 300.0, positive_threshold: float = 4.0) -> None:
+        if regularization <= 0:
+            raise ValueError("regularization must be positive")
+        self.regularization = regularization
+        self.positive_threshold = positive_threshold
+        self.user_to_index: dict[str, int] = {}
+        self.item_to_index: dict[str, int] = {}
+        self.interactions: csr_matrix | None = None
+        self.coefficients: np.ndarray | None = None
+
+    def fit(self, train: pd.DataFrame) -> "EASERanker":
+        events = _positive_events(train, self.positive_threshold)
+        users = sorted(train["user_id"].astype(str).unique())
+        items = sorted(train["item_id"].astype(str).unique())
+        if events.empty or not items:
+            raise ValueError("EASERanker needs at least one positive training interaction")
+        self.user_to_index = {value: index for index, value in enumerate(users)}
+        self.item_to_index = {value: index for index, value in enumerate(items)}
+        self.interactions = csr_matrix(
+            (
+                np.ones(len(events), dtype=np.float64),
+                (events["user_id"].map(self.user_to_index), events["item_id"].map(self.item_to_index)),
+            ),
+            shape=(len(users), len(items)),
+        )
+        gram = (self.interactions.T @ self.interactions).toarray()
+        gram.flat[:: len(items) + 1] += self.regularization
+        precision = np.linalg.inv(gram)
+        coefficients = -precision / np.diag(precision)
+        np.fill_diagonal(coefficients, 0.0)
+        self.coefficients = coefficients
+        return self
+
+    def score_items(self, user_id: str, item_ids: Sequence[str]) -> np.ndarray:
+        if self.interactions is None or self.coefficients is None:
+            raise RuntimeError("Call fit before scoring")
+        user_index = self.user_to_index.get(str(user_id))
+        if user_index is None:
+            return np.zeros(len(item_ids), dtype=float)
+        all_scores = np.asarray(self.interactions.getrow(user_index) @ self.coefficients).ravel()
+        return np.asarray([all_scores[self.item_to_index[item]] if item in self.item_to_index else 0.0 for item in item_ids])
+
+
+def select_ease_regularization(
+    train: pd.DataFrame,
+    validation: pd.DataFrame,
+    *,
+    candidates: Sequence[float] = (10.0, 30.0, 100.0, 300.0, 1_000.0, 3_000.0),
+    k: int = 10,
+    positive_threshold: float = 4.0,
+    seed: int = 42,
+    max_users: int = 200,
+) -> tuple[EASERanker, float, dict[str, float]]:
+    """Select EASE regularisation using validation only, never the test split."""
+    best: tuple[EASERanker, float, dict[str, float]] | None = None
+    for regularization in candidates:
+        model = EASERanker(regularization=regularization, positive_threshold=positive_threshold).fit(train)
+        metrics = evaluate_ranking(
+            model, train, validation, k_values=(k,), positive_threshold=positive_threshold, seed=seed, max_users=max_users
+        )
+        if best is None or metrics[f"ndcg@{k}"] > best[2][f"ndcg@{k}"]:
+            best = (model, float(regularization), metrics)
+    assert best is not None
+    return best
+
+
 class ItemKNNRanker:
     """Sparse item-item CF storing only top-K neighbours, never a dense similarity matrix."""
 
-    def __init__(self, n_neighbors: int = 100, positive_threshold: float = 4.0) -> None:
+    def __init__(self, n_neighbors: int = 100, shrinkage: float = 0.0, positive_threshold: float = 4.0) -> None:
+        if shrinkage < 0:
+            raise ValueError("shrinkage must be non-negative")
         self.n_neighbors = n_neighbors
+        self.shrinkage = shrinkage
         self.positive_threshold = positive_threshold
         self.user_to_index: dict[str, int] = {}
         self.item_to_index: dict[str, int] = {}
@@ -177,6 +257,7 @@ class ItemKNNRanker:
             self.item_similarity = csr_matrix((len(items), len(items)), dtype=np.float32)
             return self
         item_user = normalize(self.interactions.T, norm="l2", axis=1)
+        co_counts = (self.interactions.T @ self.interactions).tocsr()
         neighbor_count = min(self.n_neighbors + 1, len(items))
         nearest = NearestNeighbors(metric="cosine", algorithm="brute", n_neighbors=neighbor_count, n_jobs=-1)
         nearest.fit(item_user)
@@ -189,6 +270,10 @@ class ItemKNNRanker:
                 if neighbor == item_index:
                     continue
                 similarity = max(0.0, 1.0 - float(distance))
+                if self.shrinkage:
+                    similarity *= float(co_counts[item_index, int(neighbor)]) / (
+                        float(co_counts[item_index, int(neighbor)]) + self.shrinkage
+                    )
                 if similarity > 0:
                     row_indices.append(item_index)
                     col_indices.append(int(neighbor))
@@ -206,6 +291,30 @@ class ItemKNNRanker:
             return np.zeros(len(item_ids), dtype=float)
         all_scores = (self.interactions.getrow(user_index) @ self.item_similarity).toarray().ravel()
         return np.asarray([all_scores[self.item_to_index[item]] if item in self.item_to_index else 0.0 for item in item_ids])
+
+
+def select_item_knn_parameters(
+    train: pd.DataFrame,
+    validation: pd.DataFrame,
+    *,
+    candidates: Sequence[tuple[int, float]] = ((20, 0.0), (50, 0.0), (100, 0.0), (200, 0.0), (50, 10.0), (100, 10.0), (100, 50.0)),
+    k: int = 10,
+    positive_threshold: float = 4.0,
+    seed: int = 42,
+    max_users: int = 200,
+) -> tuple[ItemKNNRanker, dict[str, float], dict[str, float]]:
+    """Select ItemKNN neighbourhood/shrinkage on validation only."""
+    best: tuple[ItemKNNRanker, dict[str, float], dict[str, float]] | None = None
+    for neighbors, shrinkage in candidates:
+        model = ItemKNNRanker(neighbors, shrinkage, positive_threshold).fit(train)
+        metrics = evaluate_ranking(
+            model, train, validation, k_values=(k,), positive_threshold=positive_threshold, seed=seed, max_users=max_users
+        )
+        parameters = {"n_neighbors": float(neighbors), "shrinkage": float(shrinkage)}
+        if best is None or metrics[f"ndcg@{k}"] > best[2][f"ndcg@{k}"]:
+            best = (model, parameters, metrics)
+    assert best is not None
+    return best
 
 
 class ContentRanker:
