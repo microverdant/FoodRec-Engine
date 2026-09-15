@@ -8,12 +8,12 @@ htmlcov/
 # Data and generated artifacts
 data/
 artifacts/
-models/
+/models/
 *.joblib
 *.pt
 *.pth
+*.egg-info/
 
 # Notebook checkpoints and local configuration
 .ipynb_checkpoints/
 .env
-
