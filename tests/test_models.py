@@ -68,7 +68,7 @@ def test_sasrec_history_excludes_same_timestamp_events():
     )
     model = SASRecRanker(max_history=3, embedding_dim=6, heads=2, layers=1, epochs=1, device="cpu")
     model.item_to_index = {"a": 0, "b": 1, "c": 2}
-    histories, targets, _, _ = model._examples(frame)
+    histories, targets, _, _, _ = model._examples(frame)
     # Only c can be a target; a/b share the first timestamp and cannot predict each other.
     assert targets.tolist() == [2]
     assert histories.tolist() == [[3, 0, 1]]

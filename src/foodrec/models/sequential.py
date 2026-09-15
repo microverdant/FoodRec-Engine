@@ -24,7 +24,9 @@ class _SASRec(nn.Module):
         block = nn.TransformerEncoderLayer(
             d_model=embedding_dim, nhead=heads, dim_feedforward=embedding_dim * 2, dropout=dropout, batch_first=True, activation="gelu"
         )
-        self.encoder = nn.TransformerEncoder(block, num_layers=layers)
+        # Padded fixed-length histories do not benefit from PyTorch's experimental
+        # nested-tensor conversion and keeping the dense layout is more portable.
+        self.encoder = nn.TransformerEncoder(block, num_layers=layers, enable_nested_tensor=False)
         nn.init.normal_(self.item_embedding.weight[:-1], std=0.02)
 
     def encode_history(self, history: torch.Tensor) -> torch.Tensor:
@@ -81,7 +83,9 @@ class SASRecRanker:
         self._user_vectors: dict[str, np.ndarray] = {}
         self._item_vectors: np.ndarray | None = None
 
-    def _examples(self, train: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, dict[str, list[int]], dict[str, set[int]]]:
+    def _examples(
+        self, train: pd.DataFrame
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, list[int]], dict[str, set[int]]]:
         required = {"user_id", "item_id", "rating", "timestamp"}
         missing = required.difference(train.columns)
         if missing:
@@ -92,6 +96,7 @@ class SASRecRanker:
         positive = positive.sort_values(["user_id", "timestamp", "item_id"], kind="stable")
         histories: list[list[int]] = []
         targets: list[int] = []
+        example_users: list[str] = []
         final_histories: dict[str, list[int]] = {}
         positives_by_user: dict[str, set[int]] = {}
         padding = len(self.item_to_index)
@@ -105,22 +110,33 @@ class SASRecRanker:
                     for target in group_items:
                         histories.append(encoded)
                         targets.append(target)
+                        example_users.append(user_id)
                 history.extend(group_items)
                 known.update(group_items)
             final_histories[user_id] = history[-self.max_history :]
             positives_by_user[user_id] = known
-        return np.asarray(histories, dtype=np.int64), np.asarray(targets, dtype=np.int64), final_histories, positives_by_user
+        return (
+            np.asarray(histories, dtype=np.int64),
+            np.asarray(targets, dtype=np.int64),
+            np.asarray(example_users, dtype=object),
+            final_histories,
+            positives_by_user,
+        )
 
     def fit(self, train: pd.DataFrame) -> "SASRecRanker":
         items = sorted(train["item_id"].astype(str).unique())
         if not items:
             raise ValueError("SASRecRanker needs at least one training item")
         self.item_to_index = {item_id: index for index, item_id in enumerate(items)}
-        histories, targets, final_histories, _ = self._examples(train)
+        histories, targets, example_users, final_histories, positives_by_user = self._examples(train)
         if not len(targets):
             raise ValueError("SASRecRanker needs a user with positive events at two distinct timestamps")
-        # Targets cannot be joined back safely by duplicates; sample from all items and
-        # reject only the target itself. This uses no future/test feature or label.
+        # A sampled negative may not be any train-period positive for that user.
+        # This prevents false-negative supervision without touching validation/test.
+        eligible = np.asarray([len(positives_by_user[user_id]) < len(items) for user_id in example_users])
+        histories, targets, example_users = histories[eligible], targets[eligible], example_users[eligible]
+        if not len(targets):
+            raise ValueError("SASRecRanker needs a target whose user has an unseen training item")
         torch.manual_seed(self.seed)
         rng = np.random.default_rng(self.seed)
         self.model = _SASRec(len(items), self.embedding_dim, self.max_history, self.layers, self.heads, self.dropout).to(self.device)
@@ -130,9 +146,14 @@ class SASRecRanker:
             for batch_indices in np.array_split(rng.permutation(len(targets)), max(1, int(np.ceil(len(targets) / self.batch_size)))):
                 batch_history = torch.tensor(histories[batch_indices], dtype=torch.long, device=self.device)
                 positive = torch.tensor(targets[batch_indices], dtype=torch.long, device=self.device)
-                negative = torch.tensor(rng.integers(len(items), size=len(batch_indices)), dtype=torch.long, device=self.device)
-                # Do not label the current positive target as its own negative.
-                negative = torch.where(negative.eq(positive), (negative + 1) % len(items), negative)
+                negative_indices = np.empty(len(batch_indices), dtype=np.int64)
+                for batch_position, example_index in enumerate(batch_indices):
+                    user_positives = positives_by_user[example_users[example_index]]
+                    candidate = int(rng.integers(len(items)))
+                    while candidate in user_positives:
+                        candidate = int(rng.integers(len(items)))
+                    negative_indices[batch_position] = candidate
+                negative = torch.tensor(negative_indices, dtype=torch.long, device=self.device)
                 user_vectors = self.model.encode_history(batch_history)
                 positive_scores = (user_vectors * self.model.item_vectors(positive)).sum(dim=1)
                 negative_scores = (user_vectors * self.model.item_vectors(negative)).sum(dim=1)
