@@ -8,7 +8,10 @@
   "ranking": {
     "candidate_policy": "full_train_catalog_minus_seen",
     "k_values": [5, 10, 20],
-    "tie_break_seed": 42
+    "tie_break_seed": 42,
+    "bootstrap_samples": 500,
+    "bootstrap_unit": "eligible_user",
+    "confidence_level": 0.95
   },
   "protocol": {
     "primary": "per_user_last_timestamp",
@@ -16,4 +19,3 @@
     "seeds": [42, 2025, 3407]
   }
 }
-

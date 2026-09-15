@@ -78,6 +78,8 @@ def evaluate_ranking(
     positive_threshold: float = 4.0,
     seed: int = 42,
     max_users: int | None = None,
+    bootstrap_samples: int = 0,
+    confidence_level: float = 0.95,
 ) -> dict[str, float]:
     """Full-catalog Top-N evaluation with correct precision/recall semantics.
 
@@ -93,6 +95,10 @@ def evaluate_ranking(
     k_values = tuple(sorted(set(int(k) for k in k_values if k > 0)))
     if not k_values:
         raise ValueError("k_values must contain at least one positive K")
+    if bootstrap_samples < 0:
+        raise ValueError("bootstrap_samples must be non-negative")
+    if not 0 < confidence_level < 1:
+        raise ValueError("confidence_level must be between 0 and 1")
 
     catalog = sorted(train["item_id"].astype(str).unique().tolist())
     catalog_set = set(catalog)
@@ -156,9 +162,25 @@ def evaluate_ranking(
         "catalog_items": float(len(catalog)),
     }
     for k in k_values:
+        bootstrap_indices = None
+        metric_count = len(aggregates[k]["recall"])
+        if bootstrap_samples and metric_count:
+            bootstrap_rng = np.random.default_rng(seed + k * 10_007)
+            bootstrap_indices = bootstrap_rng.integers(
+                0, metric_count, size=(bootstrap_samples, metric_count)
+            )
         for metric in ("precision", "recall", "hit_rate", "ndcg", "mrr"):
             values = aggregates[k][metric]
             result[f"{metric}@{k}"] = float(np.mean(values)) if values else 0.0
+            if bootstrap_indices is not None:
+                sampled_means = np.asarray(values, dtype=float)[bootstrap_indices].mean(axis=1)
+                tail = (1.0 - confidence_level) / 2.0
+                result[f"{metric}@{k}_ci{int(confidence_level * 100)}_low"] = float(
+                    np.quantile(sampled_means, tail)
+                )
+                result[f"{metric}@{k}_ci{int(confidence_level * 100)}_high"] = float(
+                    np.quantile(sampled_means, 1.0 - tail)
+                )
         result[f"coverage@{k}"] = len(recommended[k]) / len(catalog) if catalog else 0.0
         if recommended[k]:
             result[f"average_positive_popularity@{k}"] = float(
@@ -167,4 +189,3 @@ def evaluate_ranking(
         else:
             result[f"average_positive_popularity@{k}"] = 0.0
     return result
-

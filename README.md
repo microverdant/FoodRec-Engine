@@ -16,6 +16,8 @@ metrics with one shared data contract and evaluation layer.
   Coverage, cold-target counts, and popularity.
 - Top-N evaluates the complete training catalog with train-seen items masked. Ties
   are broken by a deterministic hash independent of target insertion order.
+- Full validation/test ranking metrics include deterministic user-level bootstrap
+  95% confidence intervals (500 resamples by default).
 - All features, including TF-IDF documents, are fit on training data only. Hybrid
   weights are selected on validation only; the test split is evaluated once.
 
@@ -71,6 +73,11 @@ both by default; use `--skip-neural` for a CPU-only classical/graph smoke run.
 The repository does not present DLRM/DCNv2 as CTR models because this dataset has
 no impression or non-click logs; adding a genuine industrial reranker requires
 those labels and request/context features.
+
+Use `--protocol global` to run the stricter calendar-time robustness check and
+`--bootstrap-samples 0` only for a faster exploratory run without intervals.
+See [the checked benchmark summary](docs/evaluation-results.md) for the two
+protocols and the interpretation limits of their confidence intervals.
 
 The benchmark selects ItemKNN neighbourhood/shrinkage and EASE regularisation from
 bounded candidate sets on validation only, records those selections in its JSON,

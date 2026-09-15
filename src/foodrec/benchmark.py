@@ -46,7 +46,13 @@ def _fit_models(train, validation, include_neural: bool, *, item_knn_parameters:
     return models
 
 
-def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) -> dict:
+def run(
+    csv_path: str,
+    output_path: str,
+    protocol: str,
+    include_neural: bool,
+    bootstrap_samples: int = 500,
+) -> dict:
     builder = ReviewDatasetBuilder(DataConfig())
     data = builder.prepare(builder.load_csv(csv_path))
     split = per_user_temporal_split(data) if protocol == "per-user" else global_temporal_split(data)
@@ -63,7 +69,9 @@ def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) ->
         ease_regularization=ease_regularization,
     )
     validation_metrics = {
-        name: evaluate_ranking(model, split.train, split.validation)
+        name: evaluate_ranking(
+            model, split.train, split.validation, bootstrap_samples=bootstrap_samples
+        )
         for name, model in validation_models.items()
     }
     hybrid, weights, hybrid_selection_metrics = select_hybrid_weights(
@@ -74,8 +82,12 @@ def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) ->
     )
     # The bounded validation subset above is only for weight selection. Publish the
     # hybrid's validation result on the same full validation cohort as every model.
-    validation_metrics["hybrid"] = evaluate_ranking(hybrid, split.train, split.validation)
-    validation_metrics["svd_nmf_blend"] = evaluate_ranking(svd_nmf_blend, split.train, split.validation)
+    validation_metrics["hybrid"] = evaluate_ranking(
+        hybrid, split.train, split.validation, bootstrap_samples=bootstrap_samples
+    )
+    validation_metrics["svd_nmf_blend"] = evaluate_ranking(
+        svd_nmf_blend, split.train, split.validation, bootstrap_samples=bootstrap_samples
+    )
 
     combined_train = pd.concat([split.train, split.validation], ignore_index=True)
     final_models = _fit_models(
@@ -92,13 +104,20 @@ def run(csv_path: str, output_path: str, protocol: str, include_neural: bool) ->
         final_models["biased_mf"], final_models["implicit_nmf"], svd_weight
     )
     test_metrics = {
-        name: evaluate_ranking(model, combined_train, split.test)
+        name: evaluate_ranking(
+            model, combined_train, split.test, bootstrap_samples=bootstrap_samples
+        )
         for name, model in final_models.items()
     }
     rating_metrics = evaluate_ratings(final_models["biased_mf"], split.test)
     report = {
         "preparation": builder.report.to_dict() if builder.report else {},
         "protocol": split.protocol,
+        "bootstrap": {
+            "samples": bootstrap_samples,
+            "confidence_level": 0.95,
+            "unit": "eligible_user",
+        },
         "split_rows": {"train": len(split.train), "validation": len(split.validation), "test": len(split.test)},
         "hybrid_weights_selected_on_validation": weights,
         "hybrid_weight_selection_validation_sample": hybrid_selection_metrics,
@@ -124,8 +143,15 @@ def main() -> None:
     parser.add_argument("--protocol", choices=("per-user", "global"), default="per-user")
     parser.add_argument("--skip-neural", action="store_true", help="Skip TwoTower and SASRec CPU/GPU training")
     parser.add_argument("--skip-two-tower", action="store_true", help="Deprecated alias for --skip-neural")
+    parser.add_argument("--bootstrap-samples", type=int, default=500)
     args = parser.parse_args()
-    report = run(args.csv, args.output, args.protocol, include_neural=not (args.skip_neural or args.skip_two_tower))
+    report = run(
+        args.csv,
+        args.output,
+        args.protocol,
+        include_neural=not (args.skip_neural or args.skip_two_tower),
+        bootstrap_samples=args.bootstrap_samples,
+    )
     print(json.dumps(report, indent=2))
 
 
